@@ -22,3 +22,24 @@ jspm_packages/
 .pnp
 .pnp.js
 dist/
+
+# Diagnostic and Test Scripts
+test-*.js
+check-*.js
+create-*.js
+migrate-*.js
+add-*.js
+run-migration.js
+seed-database.js
+compute-b64.js
+loadingStateManager.js
+update-admin-credentials.js
+verify-products-post-migration.js
+IMPLEMENTATION_*.md
+PERFORMANCE_*.md
+WORKFLOW_*.md
+README.Docker.md
+database-schema.sql
+add_phone_verified_column.sql
+test-api-powershell.ps1
+scripts/*.js
