@@ -2,6 +2,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const { AppDataSource } = require('../config/data-source');
 const { Product } = require('../entities/Product');
 const { Category } = require('../entities/Category');
+const { User } = require('../entities/User');
 
 // Global search across products and categories
 const search = asyncHandler(async (req, res) => {
@@ -379,10 +380,46 @@ function generateSearchSuggestions(searchTerm, products, categories) {
   return suggestions;
 }
 
+// Search stores (SUPERMARKET users) by name
+const searchStores = asyncHandler(async (req, res) => {
+  const { q, page = 1, limit = 20 } = req.query;
+
+  if (!q || q.trim().length < 2) {
+    return res.status(400).json({ message: 'Search query must be at least 2 characters long' });
+  }
+
+  const searchTerm = q.trim();
+  const skip = (parseInt(page) - 1) * parseInt(limit);
+
+  const userRepo = AppDataSource.getRepository(User);
+  const [stores, total] = await userRepo
+    .createQueryBuilder('user')
+    .select(['user.id', 'user.name', 'user.email', 'user.phone', 'user.profileImage',
+             'user.latitude', 'user.longitude', 'user.createdAt', 'user.updatedAt'])
+    .where('user.role = :role', { role: 'SUPERMARKET' })
+    .andWhere('user.status = :status', { status: 'ACTIVE' })
+    .andWhere('user.name ILIKE :search', { search: `%${searchTerm}%` })
+    .orderBy('user.name', 'ASC')
+    .skip(skip)
+    .take(parseInt(limit))
+    .getManyAndCount();
+
+  res.json({
+    stores,
+    pagination: {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      total,
+      pages: Math.ceil(total / parseInt(limit))
+    }
+  });
+});
+
 module.exports = {
   search,
   searchProducts,
   getSearchSuggestions,
   getTrendingSearches,
-  advancedSearch
+  advancedSearch,
+  searchStores
 };

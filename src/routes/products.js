@@ -4,6 +4,7 @@ const {
   getProductById,
   getProductByIdForStore,
   getStoreProducts,
+  getProductsByStore,
   createProduct,
   updateProduct,
   deleteProduct,
@@ -21,6 +22,7 @@ router.get('/', optionalAuth, getProducts);
 // Store products endpoints (must come before /:id route)
 router.get('/my-store', verifyToken, requireRole('SUPERMARKET'), getStoreProducts);
 router.get('/my-store/:id', verifyToken, requireRole('SUPERMARKET'), getProductByIdForStore);
+router.get('/store/:storeId', getProductsByStore);
 
 // Global products (must come before /:id route)
 router.get('/global', getGlobalProducts);

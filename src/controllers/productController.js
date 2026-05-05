@@ -566,11 +566,46 @@ const uploadProductImage = asyncHandler(async (req, res) => {
   res.json(updatedProduct);
 });
 
+// Get products for a specific store by storeId (public)
+const getProductsByStore = asyncHandler(async (req, res) => {
+  const { storeId } = req.params;
+  const { page = 1, limit = 20 } = req.query;
+  const skip = (parseInt(page) - 1) * parseInt(limit);
+
+  const productRepo = AppDataSource.getRepository(Product);
+  const [products, total] = await productRepo
+    .createQueryBuilder('product')
+    .leftJoinAndSelect('product.category', 'category')
+    .where('product.ownerId = :ownerId', { ownerId: storeId })
+    .andWhere('product.isActive = :isActive', { isActive: true })
+    .orderBy('product.name', 'ASC')
+    .skip(skip)
+    .take(parseInt(limit))
+    .getManyAndCount();
+
+  const productsWithImages = products.map(product => ({
+    ...product,
+    imageUrl: product.images && product.images.length > 0 ? product.images[0] : product.imageUrl,
+    isFavourite: false
+  }));
+
+  res.json({
+    products: productsWithImages,
+    pagination: {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      total,
+      pages: Math.ceil(total / parseInt(limit))
+    }
+  });
+});
+
 module.exports = {
   getProducts,
   getProductById,
   getProductByIdForStore,
   getStoreProducts,
+  getProductsByStore,
   createProduct,
   updateProduct,
   deleteProduct,
