@@ -577,17 +577,27 @@ const getProductsByStore = asyncHandler(async (req, res) => {
     .createQueryBuilder('product')
     .leftJoinAndSelect('product.category', 'category')
     .where('product.ownerId = :ownerId', { ownerId: storeId })
-    .andWhere('product.isActive = :isActive', { isActive: true })
     .orderBy('product.name', 'ASC')
     .skip(skip)
     .take(parseInt(limit))
     .getManyAndCount();
 
-  const productsWithImages = products.map(product => ({
-    ...product,
-    imageUrl: product.images && product.images.length > 0 ? product.images[0] : product.imageUrl,
-    isFavourite: false
-  }));
+  // Adapter: normalize response shape to match mobile ApiProduct model
+  const productsWithImages = products.map(product => {
+    const images = Array.isArray(product.images) ? product.images : [];
+    const resolvedImageUrl = images.length > 0 ? images[0] : (product.imageUrl || null);
+    return {
+      ...product,
+      supermarketId: product.ownerId,   // mobile expects supermarketId
+      image: resolvedImageUrl,           // mobile @SerialName("image")
+      imageUrl: resolvedImageUrl,        // fallback for @JsonNames("imageUrl")
+      images,
+      isActive: true,
+      isFavourite: false,
+      rating: product.rating ?? 0,
+      reviewCount: product.reviewCount ?? 0
+    };
+  });
 
   res.json({
     products: productsWithImages,
