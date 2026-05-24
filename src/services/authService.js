@@ -6,6 +6,12 @@ const AppSetting = require('../entities/AppSetting');
 const { generateOTP, generateOTPExpiry, validateOTP, sendOTPViaSMS, verifyOTPViaSMS } = require('./otpService');
 const { generateLocationToken, generateLocationVerificationExpiry } = require('./locationVerificationService');
 
+const ALLOWED_ROLES = ['CUSTOMER', 'SUPERMARKET', 'DRIVER'];
+
+function isPartnerRole(role) {
+  return role === 'SUPERMARKET' || role === 'DRIVER';
+}
+
 function sanitizeUser(user) {
   if (!user) return null;
   const { passwordHash, otpCode, otpExpiry, ...rest } = user;
@@ -14,6 +20,19 @@ function sanitizeUser(user) {
 
 async function signup({ name, email, password, phone, role = 'CUSTOMER', latitude, longitude }) {
   const repo = AppDataSource.getRepository(User);
+
+  if (!ALLOWED_ROLES.includes(role)) {
+    const err = new Error('Invalid account role');
+    err.status = 400;
+    throw err;
+  }
+
+  if (!phone || !String(phone).trim()) {
+    const err = new Error('Phone number is required for registration');
+    err.status = 400;
+    throw err;
+  }
+
   const existing = await repo.findOne({ where: { email } });
   if (existing) {
     const err = new Error('Email already in use');
@@ -40,18 +59,11 @@ async function signup({ name, email, password, phone, role = 'CUSTOMER', latitud
 
   const passwordHash = await bcrypt.hash(password, 10);
 
-  // Generate OTP for phone verification (if phone is provided)
-  let otpCode = null;
-  let otpExpiry = null;
-  let initialStatus = 'ACTIVE'; // Default for users without phone
+  const otpCode = generateOTP();
+  const otpExpiry = generateOTPExpiry();
+  // Partners stay PENDING until admin activates; customers become ACTIVE after OTP only.
+  const initialStatus = 'PENDING';
 
-  if (phone) {
-    otpCode = generateOTP();
-    otpExpiry = generateOTPExpiry();
-    initialStatus = 'PENDING'; // Require OTP verification for phone users
-  }
-
-  // Create user with location verification requirements
   const userData = {
     name,
     email,
@@ -59,7 +71,7 @@ async function signup({ name, email, password, phone, role = 'CUSTOMER', latitud
     phone,
     role,
     status: initialStatus,
-    phoneVerified: !phone, // Auto-verified if no phone provided
+    phoneVerified: false,
     otpCode,
     otpExpiry,
     preferences: {
@@ -109,35 +121,16 @@ async function signup({ name, email, password, phone, role = 'CUSTOMER', latitud
     throw err;
   }
 
-  // Issue tokens ONLY if phone verification is NOT required
-  let token = null;
-  let refreshTokenValue = null;
-
-  if (!phone || user.phoneVerified) {
-    // Issue short-lived access token (15 minutes)
-    token = jwt.sign(payload, secret, { expiresIn: '15m' });
-
-    // Issue long-lived refresh token (7 days)
-    const refreshPayload = { id: user.id, type: 'refresh' };
-    refreshTokenValue = jwt.sign(refreshPayload, secret, { expiresIn: '7d' });
-  }
-
   const response = {
     user: sanitizeUser(user),
-    token,
-    refreshToken: refreshTokenValue,
-    requiresPhoneVerification: !!phone && !user.phoneVerified,
-    message: phone ? 'Account created. Please verify your phone number with the OTP sent.' : 'Account created successfully.'
+    token: null,
+    refreshToken: null,
+    requiresPhoneVerification: true,
+    requiresAdminActivation: isPartnerRole(role),
+    message: isPartnerRole(role)
+      ? 'Account created. Verify your phone with the OTP sent, then wait for admin activation.'
+      : 'Account created. Please verify your phone number with the OTP sent.',
   };
-
-  // Supermarkets are auto-verified if location provided during signup
-  if (role === 'SUPERMARKET') {
-    if (phone) {
-      response.message = 'Account created. Please verify your phone number and location to complete registration.';
-    } else {
-      response.message = 'Account created and location verified successfully.';
-    }
-  }
 
   return response;
 }
@@ -192,11 +185,16 @@ async function login({ email, password }) {
       const err = new Error('Account disabled');
       err.status = 403;
       throw err;
-    } else {
-      // Auto-reactivate if suspension expired or no until set
+    }
+    if (!isPartnerRole(user.role)) {
       await repo.update(user.id, { status: 'ACTIVE', suspendedUntil: null });
       user.status = 'ACTIVE';
       user.suspendedUntil = null;
+    } else {
+      const err = new Error('Account disabled. Please contact support.');
+      err.status = 403;
+      err.requiresAdminActivation = true;
+      throw err;
     }
   }
 
@@ -230,6 +228,15 @@ async function login({ email, password }) {
     err.requiresPhoneVerification = true;
     err.userId = user.id;
     err.phone = user.phone;
+    throw err;
+  }
+
+  if (isPartnerRole(user.role) && user.status !== 'ACTIVE') {
+    const err = new Error(
+      'Your account is not activated yet. Please contact support to activate your account.'
+    );
+    err.status = 403;
+    err.requiresAdminActivation = true;
     throw err;
   }
 
@@ -298,9 +305,6 @@ async function forgotPassword({ email }) {
       console.error(`Failed to send SMS OTP: ${error.message}`);
       // Continue even if SMS fails - OTP is still stored in DB
     }
-  } else {
-    // Fallback: Log OTP for development/email-only users
-    console.log(`OTP for ${email}: ${otpCode}`);
   }
 
   return { message: 'If the email exists, an OTP has been sent' };
@@ -313,6 +317,15 @@ async function verifyOTP({ email, otpCode }) {
   if (!user) {
     const err = new Error('User not found');
     err.status = 404;
+    throw err;
+  }
+
+  // Signup phone verification only (not password reset on existing active accounts)
+  if (user.phoneVerified && user.status !== 'PENDING') {
+    const err = new Error(
+      'Phone already verified. Use the password reset flow if you forgot your password.'
+    );
+    err.status = 400;
     throw err;
   }
 
@@ -338,36 +351,60 @@ async function verifyOTP({ email, otpCode }) {
     throw err;
   }
 
-  // Clear OTP after successful verification and activate account
+  const partner = isPartnerRole(user.role);
+  const nextStatus = partner ? 'PENDING' : 'ACTIVE';
+
   await repo.update(user.id, {
     otpCode: null,
     otpExpiry: null,
     phoneVerified: true,
-    status: 'ACTIVE' // Activate account after phone verification
+    status: nextStatus,
   });
 
-  // Generate tokens for the verified user
-  const payload = {
-    id: user.id,
-    email: user.email,
-    role: user.role,
-    name: user.name,
-    status: 'ACTIVE'
-  };
+  const updatedUser = await repo.findOne({ where: { id: user.id } });
+  const sanitized = sanitizeUser(updatedUser);
+
+  if (partner) {
+    return {
+      message:
+        'Phone verified. Your account is pending admin activation. Please contact support.',
+      userId: user.id,
+      phoneVerified: true,
+      requiresAdminActivation: true,
+      token: null,
+      refreshToken: null,
+      user: sanitized,
+    };
+  }
 
   const secret = process.env.SECRET_KEY;
-  const token = jwt.sign(payload, secret, { expiresIn: '15m' });
+  if (!secret) {
+    const err = new Error('SECRET_KEY is not configured. Cannot issue tokens.');
+    err.status = 500;
+    throw err;
+  }
 
-  const refreshPayload = { id: user.id, type: 'refresh' };
-  const refreshTokenValue = jwt.sign(refreshPayload, secret, { expiresIn: '7d' });
+  const payload = {
+    id: updatedUser.id,
+    email: updatedUser.email,
+    role: updatedUser.role,
+    name: updatedUser.name,
+    status: 'ACTIVE',
+  };
+
+  const token = jwt.sign(payload, secret, { expiresIn: '15m' });
+  const refreshTokenValue = jwt.sign({ id: updatedUser.id, type: 'refresh' }, secret, {
+    expiresIn: '7d',
+  });
 
   return {
     message: 'Phone number verified successfully. Your account is now active.',
-    userId: user.id,
+    userId: updatedUser.id,
     phoneVerified: true,
+    requiresAdminActivation: false,
     token,
     refreshToken: refreshTokenValue,
-    user: sanitizeUser(user)
+    user: sanitized,
   };
 }
 
@@ -458,20 +495,18 @@ async function verifyLocation({ userId, verificationToken, latitude, longitude }
     throw err;
   }
 
-  // Mark location as verified and update user status
   await repo.update(user.id, {
     locationVerified: true,
     locationVerificationToken: null,
     locationVerificationExpiry: null,
-    status: 'ACTIVE' // Activate the account after location verification
   });
 
   // Get updated user
   const updatedUser = await repo.findOne({ where: { id: userId } });
 
   return {
-    message: 'Location verified successfully. Your account is now active.',
-    user: sanitizeUser(updatedUser)
+    message: 'Location verified successfully.',
+    user: sanitizeUser(updatedUser),
   };
 }
 

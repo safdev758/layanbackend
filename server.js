@@ -74,6 +74,9 @@ app.use((err, req, res, next) => {
   if (!res.headersSent) {
     res.status(status).json({
       message,
+      requiresAdminActivation: Boolean(err.requiresAdminActivation),
+      requiresPhoneVerification: Boolean(err.requiresPhoneVerification),
+      accountStatus: err.statusCode || undefined,
       error: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
   }

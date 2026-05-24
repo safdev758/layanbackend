@@ -271,11 +271,6 @@ const updateLocation = asyncHandler(async (req, res) => {
     updatedAt: new Date()
   };
 
-  // If user is a store with PENDING status, activate them
-  if (user.role === 'SUPERMARKET' && user.status === 'PENDING') {
-    updates.status = 'ACTIVE';
-  }
-
   await repo.update(req.user.id, updates);
   const updatedUser = await repo.findOne({ where: { id: req.user.id } });
 
