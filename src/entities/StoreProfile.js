@@ -24,8 +24,7 @@ const StoreProfile = new EntitySchema({
       nullable: true,
     },
     profileImage: {
-      type: "varchar",
-      length: 500,
+      type: "text",
       nullable: true,
     },
     images: {

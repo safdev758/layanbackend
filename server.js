@@ -189,7 +189,7 @@ async function ensureRequiredTables() {
       "userId" UUID UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       "displayName" VARCHAR(255) NOT NULL,
       phone VARCHAR(20),
-      "profileImage" VARCHAR(500),
+      "profileImage" TEXT,
       images TEXT[] DEFAULT '{}',
       description TEXT,
       latitude DOUBLE PRECISION,
