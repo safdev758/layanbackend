@@ -3,6 +3,42 @@ const { AppDataSource } = require('../config/data-source');
 const { StoreProfile } = require('../entities/StoreProfile');
 const { User } = require('../entities/User');
 
+function isBase64Image(value) {
+  return typeof value === 'string' && value.startsWith('data:image');
+}
+
+function isDisplayableImageUrl(value) {
+  return typeof value === 'string' && (
+    value.startsWith('http://') ||
+    value.startsWith('https://') ||
+    value.startsWith('/uploads/')
+  );
+}
+
+function normalizeStoreProfileMedia(profileImage, images) {
+  let normalizedImages = [];
+
+  if (Array.isArray(images)) {
+    normalizedImages = images.filter(
+      (img) => img && (isBase64Image(img) || isDisplayableImageUrl(img))
+    );
+  } else if (typeof images === 'string' && (isBase64Image(images) || isDisplayableImageUrl(images))) {
+    normalizedImages = [images];
+  }
+
+  if (profileImage && (isBase64Image(profileImage) || isDisplayableImageUrl(profileImage))) {
+    if (!normalizedImages.includes(profileImage)) {
+      normalizedImages = [profileImage, ...normalizedImages];
+    }
+  }
+
+  const primaryImage = normalizedImages[0] || null;
+  return {
+    profileImage: primaryImage,
+    images: normalizedImages,
+  };
+}
+
 function serializeStoreProfile(profile, user = null) {
   return {
     id: profile.userId,
@@ -88,13 +124,19 @@ const updateMyStoreProfile = asyncHandler(async (req, res) => {
     return res.status(403).json({ message: 'Only supermarket accounts can update store profiles' });
   }
 
-  const allowedFields = ['displayName', 'phone', 'profileImage', 'images', 'description', 'latitude', 'longitude'];
+  const allowedFields = ['displayName', 'phone', 'description', 'latitude', 'longitude'];
   const updates = {};
   Object.keys(req.body).forEach((key) => {
     if (allowedFields.includes(key)) {
       updates[key] = req.body[key];
     }
   });
+
+  if (req.body.profileImage !== undefined || req.body.images !== undefined) {
+    const media = normalizeStoreProfileMedia(req.body.profileImage, req.body.images);
+    updates.profileImage = media.profileImage;
+    updates.images = media.images;
+  }
 
   if (Object.keys(updates).length === 0) {
     return res.status(400).json({ message: 'No valid fields to update' });
