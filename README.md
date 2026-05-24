@@ -87,9 +87,15 @@ A comprehensive e-commerce backend API built with Node.js, Express, TypeORM, and
 ### Search (`/api/v1/search`)
 - `GET /` - Global search across products and categories
 - `GET /products` - Search products only
+- `GET /stores` - Search supermarket store profiles by display name
 - `GET /suggestions` - Get search suggestions
 - `GET /trending` - Get trending searches
 - `POST /advanced` - Advanced search with filters
+
+### Store Profiles (`/api/v1/store-profiles`)
+- `GET /:id` - Public store profile by supermarket user id (public)
+- `GET /me` - Get own store profile (Supermarket only)
+- `PUT /me` - Update display name, phone, images, description (Supermarket only)
 
 ## WebSocket Events
 
@@ -136,6 +142,14 @@ The application uses PostgreSQL with the following main entities:
    npm run migrate
    npm start
    ```
+
+   For existing databases, apply incremental migrations (safe, non-destructive):
+   ```bash
+   npm run db:create:store-profiles
+   ```
+   (`src/scripts/createStoreProfilesTable.js` — safe for existing DBs.)
+
+   Server startup also runs `ensureRequiredTables()` which creates `store_profiles` and backfills from `SUPERMARKET` users.
 
 ## Environment Variables
 

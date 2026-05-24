@@ -19,6 +19,7 @@ const { Message } = require('../entities/Message');
 const { GlobalProduct } = require('../entities/GlobalProduct');
 const { AppSetting } = require('../entities/AppSetting');
 const { Advertisement } = require('../entities/Advertisement');
+const { StoreProfile } = require('../entities/StoreProfile');
 
 // Avoid intermittent ETIMEDOUT issues on Node 22 dual-stack auto-selection.
 dns.setDefaultResultOrder('ipv4first');
@@ -49,7 +50,7 @@ const AppDataSource = new DataSource({
   database: url.pathname.slice(1), // Remove leading slash
   synchronize: false, // PRODUCTION SAFE: Disabled to prevent table drops/mutations
   logging: false,
-  entities: [User, Product, Address, Category, Cart, Order, OrderItem, Review, DriverTrip, MarketplaceItem, Thread, Message, GlobalProduct, AppSetting, Advertisement],
+  entities: [User, Product, Address, Category, Cart, Order, OrderItem, Review, DriverTrip, MarketplaceItem, Thread, Message, GlobalProduct, AppSetting, Advertisement, StoreProfile],
   ssl: true, // Enable SSL
   extra: {
     ssl: {

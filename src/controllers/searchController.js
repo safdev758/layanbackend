@@ -3,6 +3,8 @@ const { AppDataSource } = require('../config/data-source');
 const { Product } = require('../entities/Product');
 const { Category } = require('../entities/Category');
 const { User } = require('../entities/User');
+const { StoreProfile } = require('../entities/StoreProfile');
+const { serializeStoreProfile } = require('../controllers/storeProfileController');
 
 // Global search across products and categories
 const search = asyncHandler(async (req, res) => {
@@ -380,7 +382,7 @@ function generateSearchSuggestions(searchTerm, products, categories) {
   return suggestions;
 }
 
-// Search stores (SUPERMARKET users) by name
+// Search stores by store profile display name
 const searchStores = asyncHandler(async (req, res) => {
   const { q, page = 1, limit = 20 } = req.query;
 
@@ -391,18 +393,25 @@ const searchStores = asyncHandler(async (req, res) => {
   const searchTerm = q.trim();
   const skip = (parseInt(page) - 1) * parseInt(limit);
 
-  const userRepo = AppDataSource.getRepository(User);
-  const [stores, total] = await userRepo
-    .createQueryBuilder('user')
-    .select(['user.id', 'user.name', 'user.email', 'user.phone', 'user.profileImage',
-             'user.latitude', 'user.longitude', 'user.createdAt', 'user.updatedAt'])
+  const profileRepo = AppDataSource.getRepository(StoreProfile);
+  const [profiles, total] = await profileRepo
+    .createQueryBuilder('profile')
+    .innerJoin(User, 'user', 'user.id = profile.userId')
     .where('user.role = :role', { role: 'SUPERMARKET' })
     .andWhere('user.status = :status', { status: 'ACTIVE' })
-    .andWhere('user.name ILIKE :search', { search: `%${searchTerm}%` })
-    .orderBy('user.name', 'ASC')
+    .andWhere('profile.displayName ILIKE :search', { search: `%${searchTerm}%` })
+    .orderBy('profile.displayName', 'ASC')
     .skip(skip)
     .take(parseInt(limit))
     .getManyAndCount();
+
+  const userRepo = AppDataSource.getRepository(User);
+  const stores = await Promise.all(
+    profiles.map(async (profile) => {
+      const user = await userRepo.findOne({ where: { id: profile.userId } });
+      return serializeStoreProfile(profile, user);
+    })
+  );
 
   res.json({
     stores,
