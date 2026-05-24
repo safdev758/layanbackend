@@ -10,6 +10,7 @@
     "test": "jest --detectOpenHandles --forceExit",
     "migrate": "node migrate-database.js",
     "db:create:ads": "node create-advertisements-table.js",
+    "db:create:store-profiles": "node src/scripts/createStoreProfilesTable.js",
     "db:indexes:driver-orders": "node src/scripts/createDriverOrderIndexes.js",
     "db:setup": "psql -d your_database -f database-schema.sql",
     "db:reset": "psql -d your_database -c \"DROP SCHEMA public CASCADE; CREATE SCHEMA public;\" && npm run db:setup"

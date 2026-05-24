@@ -15,6 +15,7 @@ const orderRoutes = require('./src/routes/orders');
 const driverRoutes = require('./src/routes/drivers');
 const reviewRoutes = require('./src/routes/reviews');
 const searchRoutes = require('./src/routes/search');
+const storeProfileRoutes = require('./src/routes/storeProfiles');
 const marketplaceRoutes = require('./src/routes');
 const adminRoutes = require('./src/routes/admin');
 const routingRoutes = require('./src/routes/routing');
@@ -59,6 +60,7 @@ app.use('/api/v1/orders', orderRoutes);
 app.use('/api/v1/drivers', driverRoutes);
 app.use('/api/v1/reviews', reviewRoutes);
 app.use('/api/v1/search', searchRoutes);
+app.use('/api/v1/store-profiles', storeProfileRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/routing', routingRoutes);
 
@@ -181,7 +183,45 @@ async function ensureRequiredTables() {
     CREATE INDEX IF NOT EXISTS idx_message_created ON messages("createdAt");
   `);
 
-  console.log('Ensured required tables: advertisements, marketplace_items, threads, messages');
+  await AppDataSource.query(`
+    CREATE TABLE IF NOT EXISTS store_profiles (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      "userId" UUID UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      "displayName" VARCHAR(255) NOT NULL,
+      phone VARCHAR(20),
+      "profileImage" VARCHAR(500),
+      images TEXT[] DEFAULT '{}',
+      description TEXT,
+      latitude DOUBLE PRECISION,
+      longitude DOUBLE PRECISION,
+      "createdAt" TIMESTAMPTZ DEFAULT NOW(),
+      "updatedAt" TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+
+  await AppDataSource.query(`
+    CREATE INDEX IF NOT EXISTS idx_store_profiles_name ON store_profiles("displayName");
+  `);
+
+  await AppDataSource.query(`
+    INSERT INTO store_profiles ("userId", "displayName", phone, "profileImage", latitude, longitude, images)
+    SELECT
+      id,
+      name,
+      phone,
+      "profileImage",
+      latitude,
+      longitude,
+      CASE
+        WHEN "profileImage" IS NOT NULL AND "profileImage" <> '' THEN ARRAY["profileImage"]
+        ELSE '{}'::TEXT[]
+      END
+    FROM users
+    WHERE role = 'SUPERMARKET'
+    ON CONFLICT ("userId") DO NOTHING;
+  `);
+
+  console.log('Ensured required tables: advertisements, marketplace_items, threads, messages, store_profiles');
 }
 
 initializeDataSourceWithRetry()
