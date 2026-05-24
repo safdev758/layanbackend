@@ -6,20 +6,41 @@ const { Message } = require('../entities/Message');
 const { v4: uuidv4 } = require('uuid');
 const { In } = require('typeorm');
 
-// Get marketplace items
+// Get marketplace items (browse or server-side search via ?q= or ?query=)
 const getMarketplaceItems = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 20, query } = req.query;
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const rawQuery = req.query.q ?? req.query.query;
+  const searchTerm = typeof rawQuery === 'string' ? rawQuery.trim() : '';
   const itemRepo = AppDataSource.getRepository('MarketplaceItem');
 
-  let queryBuilder = itemRepo.createQueryBuilder('item');
-
-  if (query) {
-    queryBuilder = queryBuilder.where('item.title ILIKE :query OR item.description ILIKE :query', {
-      query: `%${query}%`
+  // Short partial queries: return empty set without loading the full catalog.
+  if (searchTerm.length > 0 && searchTerm.length < 2) {
+    return res.json({
+      data: {
+        items: [],
+        search: { q: searchTerm, applied: false, reason: 'min_length' },
+        pagination: {
+          page,
+          limit,
+          total: 0,
+          pages: 0,
+        },
+      },
     });
   }
 
-  queryBuilder = queryBuilder.orderBy('item.createdAt', 'DESC')
+  let queryBuilder = itemRepo.createQueryBuilder('item');
+
+  if (searchTerm.length >= 2) {
+    queryBuilder = queryBuilder.where(
+      '(item.title ILIKE :search OR COALESCE(item.description, \'\') ILIKE :search)',
+      { search: `%${searchTerm}%` }
+    );
+  }
+
+  queryBuilder = queryBuilder
+    .orderBy('item.createdAt', 'DESC')
     .skip((page - 1) * limit)
     .take(limit);
 
@@ -28,13 +49,17 @@ const getMarketplaceItems = asyncHandler(async (req, res) => {
   res.json({
     data: {
       items,
+      search:
+        searchTerm.length >= 2
+          ? { q: searchTerm, applied: true }
+          : null,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page,
+        limit,
         total,
-        pages: Math.ceil(total / limit)
-      }
-    }
+        pages: Math.ceil(total / limit) || 0,
+      },
+    },
   });
 });
 
