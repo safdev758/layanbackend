@@ -11,7 +11,8 @@ const {
   removeFromFavorites,
   updateLocation,
   registerPushToken,
-  unregisterPushToken
+  unregisterPushToken,
+  deleteAccount
 } = require('../controllers/userController');
 const { verifyToken, requireOwnershipOrAdmin } = require('../middleware/authenticattion');
 
@@ -21,6 +22,7 @@ const router = express.Router();
 router.get('/me', verifyToken, getCurrentUser);
 router.get('/me/favorites', verifyToken, getFavorites);
 router.put('/me', verifyToken, updateCurrentUser);
+router.delete('/me', verifyToken, deleteAccount);
 router.get('/:id', verifyToken, getUserById);
 
 // Address management

@@ -1,8 +1,13 @@
+const bcrypt = require('bcrypt');
 const asyncHandler = require('../middleware/asyncHandler');
 const { AppDataSource } = require('../config/data-source');
 const { User } = require('../entities/User');
 const { Address } = require('../entities/Address');
 const { Product } = require('../entities/Product');
+const { Order } = require('../entities/Order');
+const { Cart } = require('../entities/Cart');
+
+const ACTIVE_ORDER_STATUSES = ['PENDING', 'CONFIRMED', 'PREPARING', 'OUT_FOR_DELIVERY'];
 
 const getCurrentUser = asyncHandler(async (req, res) => {
   const repo = AppDataSource.getRepository(User);
@@ -295,6 +300,78 @@ const registerPushToken = asyncHandler(async (req, res) => {
   res.json({ message: 'Push token registered successfully', platform });
 });
 
+// Delete current user account (required for Play Store / App Store)
+const deleteAccount = asyncHandler(async (req, res) => {
+  const { password } = req.body || {};
+  const repo = AppDataSource.getRepository(User);
+  const user = await repo.findOne({ where: { id: req.user.id } });
+
+  if (!user) {
+    return res.status(404).json({ message: 'User not found' });
+  }
+
+  if (user.role === 'ADMIN') {
+    return res.status(403).json({ message: 'Admin accounts cannot be deleted from the app' });
+  }
+
+  if (user.email && user.email.endsWith('@layan.deleted')) {
+    return res.status(400).json({ message: 'Account is already deleted' });
+  }
+
+  if (user.passwordHash) {
+    if (!password || typeof password !== 'string') {
+      return res.status(400).json({ message: 'Password is required to delete your account' });
+    }
+    const match = await bcrypt.compare(password, user.passwordHash);
+    if (!match) {
+      return res.status(401).json({ message: 'Invalid password' });
+    }
+  }
+
+  const orderRepo = AppDataSource.getRepository(Order);
+  const activeOrders = await orderRepo
+    .createQueryBuilder('order')
+    .where('order.status IN (:...statuses)', { statuses: ACTIVE_ORDER_STATUSES })
+    .andWhere('(order.userId = :userId OR order.driverId = :userId)', { userId: user.id })
+    .getCount();
+
+  if (activeOrders > 0) {
+    return res.status(409).json({
+      message:
+        'You have active orders. Please complete or cancel them before deleting your account.',
+    });
+  }
+
+  const addressRepo = AppDataSource.getRepository(Address);
+  await addressRepo.delete({ userId: user.id });
+
+  const cartRepo = AppDataSource.getRepository(Cart);
+  await cartRepo.delete({ userId: user.id });
+
+  const deletedEmail = `deleted.${user.id}@layan.deleted`;
+  await repo.update(user.id, {
+    name: 'Deleted User',
+    email: deletedEmail,
+    phone: null,
+    profileImage: null,
+    passwordHash: null,
+    fcmToken: null,
+    apnsToken: null,
+    otpCode: null,
+    otpExpiry: null,
+    latitude: null,
+    longitude: null,
+    locationVerificationToken: null,
+    locationVerificationExpiry: null,
+    preferences: {},
+    status: 'SUSPENDED',
+    suspendedUntil: null,
+    updatedAt: new Date(),
+  });
+
+  res.json({ message: 'Account deleted successfully' });
+});
+
 // Unregister push notification token
 const unregisterPushToken = asyncHandler(async (req, res) => {
   const { platform = 'fcm' } = req.body;
@@ -322,4 +399,5 @@ module.exports = {
   updateLocation,
   registerPushToken,
   unregisterPushToken,
+  deleteAccount,
 };
