@@ -150,6 +150,15 @@ const updateMyStoreProfile = asyncHandler(async (req, res) => {
   Object.assign(profile, updates, { updatedAt: new Date() });
   const saved = await profileRepo.save(profile);
 
+  // Keep user.latitude/longitude in sync so order pickup resolution and maps stay consistent
+  if (updates.latitude !== undefined || updates.longitude !== undefined) {
+    const userUpdates = {};
+    if (updates.latitude !== undefined) userUpdates.latitude = updates.latitude;
+    if (updates.longitude !== undefined) userUpdates.longitude = updates.longitude;
+    await userRepo.update(user.id, userUpdates);
+    Object.assign(user, userUpdates);
+  }
+
   res.json(serializeStoreProfile(saved, user));
 });
 

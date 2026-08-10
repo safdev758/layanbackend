@@ -3,12 +3,76 @@ const { AppDataSource } = require('../config/data-source');
 const { Order } = require('../entities/Order');
 const { DriverTrip } = require('../entities/DriverTrip');
 const { User } = require('../entities/User');
-const { Between, In } = require('typeorm');
+const { StoreProfile } = require('../entities/StoreProfile');
+const { Between, In, IsNull, Not } = require('typeorm');
 const {
   ACTIVE_ORDER_STATUSES,
   getHangingOrderCutoff,
   maintainDriverOrders
 } = require('../services/driverOrderMaintenanceService');
+
+function hasCoords(lat, lon) {
+  return (
+    lat != null &&
+    lon != null &&
+    Number.isFinite(Number(lat)) &&
+    Number.isFinite(Number(lon)) &&
+    !(Number(lat) === 0 && Number(lon) === 0)
+  );
+}
+
+/**
+ * Backfill storeLat/storeLon on recent CONFIRMED orders that are missing coords
+ * but have a storeId (common when coords lived on store_profiles only).
+ */
+async function backfillMissingStoreCoords(orderRepo) {
+  const cutoff = getHangingOrderCutoff();
+  const missing = await orderRepo.find({
+    where: {
+      status: 'CONFIRMED',
+      driverId: IsNull(),
+      storeId: Not(IsNull()),
+    },
+    select: ['id', 'storeId', 'storeLat', 'storeLon', 'createdAt'],
+    take: 100,
+  });
+
+  const needsFix = missing.filter(
+    (o) => o.createdAt > cutoff && !hasCoords(o.storeLat, o.storeLon) && o.storeId
+  );
+  if (!needsFix.length) return;
+
+  const userRepo = AppDataSource.getRepository(User);
+  const profileRepo = AppDataSource.getRepository(StoreProfile);
+  const storeIds = [...new Set(needsFix.map((o) => o.storeId))];
+  const stores = await userRepo.find({
+    where: { id: In(storeIds), role: 'SUPERMARKET' },
+    select: ['id', 'latitude', 'longitude'],
+  });
+  const profiles = await profileRepo.find({
+    where: { userId: In(storeIds) },
+    select: ['userId', 'latitude', 'longitude'],
+  });
+  const storeMap = new Map(stores.map((s) => [s.id, s]));
+  const profileMap = new Map(profiles.map((p) => [p.userId, p]));
+
+  for (const order of needsFix) {
+    const store = storeMap.get(order.storeId);
+    const profile = profileMap.get(order.storeId);
+    let lat = store?.latitude;
+    let lon = store?.longitude;
+    if (!hasCoords(lat, lon) && profile) {
+      lat = profile.latitude;
+      lon = profile.longitude;
+    }
+    if (hasCoords(lat, lon)) {
+      await orderRepo.update(order.id, {
+        storeLat: Number(lat),
+        storeLon: Number(lon),
+      });
+    }
+  }
+}
 
 // Get available deliveries for driver
 const getAvailableDeliveries = asyncHandler(async (req, res) => {
@@ -34,6 +98,13 @@ const getAvailableDeliveries = asyncHandler(async (req, res) => {
 
   const orderRepo = AppDataSource.getRepository(Order);
   const thirtyMinutesAgo = getHangingOrderCutoff();
+
+  // Heal recent orders that were saved without store coords
+  try {
+    await backfillMissingStoreCoords(orderRepo);
+  } catch (err) {
+    console.warn('[Driver] store coords backfill failed:', err.message);
+  }
 
   // Haversine formula in SQL (distance in km)
   const availableOrders = await orderRepo

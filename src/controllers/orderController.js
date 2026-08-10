@@ -7,10 +7,81 @@ const { Product } = require('../entities/Product');
 const { Address } = require('../entities/Address');
 const { DriverTrip } = require('../entities/DriverTrip');
 const { User } = require('../entities/User');
+const { StoreProfile } = require('../entities/StoreProfile');
+
+function hasCoords(lat, lon) {
+  return (
+    lat != null &&
+    lon != null &&
+    Number.isFinite(Number(lat)) &&
+    Number.isFinite(Number(lon)) &&
+    !(Number(lat) === 0 && Number(lon) === 0)
+  );
+}
+
+/**
+ * Resolve supermarket pickup coords from user profile, store profile, or address.
+ * Preferred storeId (from client) wins over product.ownerId.
+ */
+async function resolveStorePickup(manager, product, preferredStoreId = null) {
+  const userRepo = manager.getRepository(User);
+  const profileRepo = manager.getRepository(StoreProfile);
+  const addressRepo = manager.getRepository(Address);
+
+  const candidates = [];
+  if (preferredStoreId) candidates.push(preferredStoreId);
+  if (product?.ownerId) candidates.push(product.ownerId);
+  // Unique preserve order
+  const seen = new Set();
+  const storeIds = candidates.filter((id) => {
+    if (!id || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+
+  for (const id of storeIds) {
+    const storeOwner = await userRepo.findOne({
+      where: { id, role: 'SUPERMARKET' },
+    });
+    if (!storeOwner) continue;
+
+    let storeLat = storeOwner.latitude;
+    let storeLon = storeOwner.longitude;
+
+    if (!hasCoords(storeLat, storeLon)) {
+      const profile = await profileRepo.findOne({ where: { userId: storeOwner.id } });
+      if (profile && hasCoords(profile.latitude, profile.longitude)) {
+        storeLat = profile.latitude;
+        storeLon = profile.longitude;
+      }
+    }
+
+    if (!hasCoords(storeLat, storeLon)) {
+      const defaultAddr = await addressRepo.findOne({
+        where: { userId: storeOwner.id, isDefault: true },
+      });
+      const anyAddr =
+        defaultAddr ||
+        (await addressRepo.findOne({ where: { userId: storeOwner.id } }));
+      if (anyAddr && hasCoords(anyAddr.latitude, anyAddr.longitude)) {
+        storeLat = anyAddr.latitude;
+        storeLon = anyAddr.longitude;
+      }
+    }
+
+    return {
+      storeId: storeOwner.id,
+      storeLat: hasCoords(storeLat, storeLon) ? Number(storeLat) : null,
+      storeLon: hasCoords(storeLat, storeLon) ? Number(storeLon) : null,
+    };
+  }
+
+  return { storeId: null, storeLat: null, storeLon: null };
+}
 
 // Create order from cart
 const createOrder = asyncHandler(async (req, res) => {
-  const { deliveryAddressId, paymentMethod, tip = 0, items, totalAmount } = req.body;
+  const { deliveryAddressId, paymentMethod, tip = 0, items, totalAmount, storeId: bodyStoreId } = req.body;
 
   if (!deliveryAddressId || !paymentMethod) {
     return res.status(400).json({
@@ -82,21 +153,26 @@ const createOrder = asyncHandler(async (req, res) => {
       where: { id: validItems[0].productId }
     });
 
-    let storeLat = null;
-    let storeLon = null;
-    let storeId = null;
+    // Client may send storeId (browsing a store), or item/product supermarket fields
+    const preferredStoreId =
+      bodyStoreId ||
+      validItems[0]?.storeId ||
+      validItems[0]?.supermarketId ||
+      validItems[0]?.product?.supermarketId ||
+      validItems[0]?.product?.storeId ||
+      null;
 
-    if (firstProduct && firstProduct.ownerId) {
-      const userRepo = queryRunner.manager.getRepository(User);
-      const storeOwner = await userRepo.findOne({
-        where: { id: firstProduct.ownerId, role: 'SUPERMARKET' }
-      });
+    const pickup = await resolveStorePickup(
+      queryRunner.manager,
+      firstProduct,
+      preferredStoreId
+    );
 
-      if (storeOwner) {
-        storeLat = storeOwner.latitude;
-        storeLon = storeOwner.longitude;
-        storeId = storeOwner.id;
-      }
+    if (!pickup.storeLat || !pickup.storeLon) {
+      console.warn(
+        '[Order] Store pickup coords missing — drivers will not see this order until coords exist',
+        { preferredStoreId, ownerId: firstProduct?.ownerId, storeId: pickup.storeId }
+      );
     }
 
     // Create order - auto-confirm so it appears in driver available deliveries
@@ -106,9 +182,9 @@ const createOrder = asyncHandler(async (req, res) => {
       status: 'CONFIRMED', // Auto-confirm so drivers can see it immediately
       paymentMethod,
       tip,
-      storeLat,
-      storeLon,
-      storeId,
+      storeLat: pickup.storeLat,
+      storeLon: pickup.storeLon,
+      storeId: pickup.storeId,
       destLat: deliveryAddress.latitude,
       destLon: deliveryAddress.longitude,
       deliveryAddress: {
