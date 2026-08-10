@@ -37,6 +37,7 @@ async function signup({ name, email, password, phone, role = 'CUSTOMER', latitud
   if (existing) {
     const err = new Error('Email already in use');
     err.status = 409;
+    err.code = 'EMAIL_IN_USE';
     throw err;
   }
 
@@ -144,6 +145,7 @@ async function login({ email, password }) {
     console.log(`❌ User not found for email: ${email}`);
     const err = new Error('Invalid email or password');
     err.status = 401;
+    err.code = 'INVALID_CREDENTIALS';
     throw err;
   }
   console.log(`✅ User found: ${user.email} (Role: ${user.role})`);
@@ -174,6 +176,7 @@ async function login({ email, password }) {
   if (!user.passwordHash) {
     const err = new Error('Account needs to be reset. Please use forgot password.');
     err.status = 401;
+    err.code = 'ACCOUNT_RESET_REQUIRED';
     throw err;
   }
 
@@ -184,6 +187,7 @@ async function login({ email, password }) {
     if (until && until > now) {
       const err = new Error('Account disabled');
       err.status = 403;
+      err.code = 'ACCOUNT_DISABLED';
       throw err;
     }
     if (!isPartnerRole(user.role)) {
@@ -193,6 +197,7 @@ async function login({ email, password }) {
     } else {
       const err = new Error('Account disabled. Please contact support.');
       err.status = 403;
+      err.code = 'ACCOUNT_DISABLED';
       err.requiresAdminActivation = true;
       throw err;
     }
@@ -202,6 +207,7 @@ async function login({ email, password }) {
   if (!match) {
     const err = new Error('Invalid email or password');
     err.status = 401;
+    err.code = 'INVALID_CREDENTIALS';
     throw err;
   }
 
@@ -225,6 +231,7 @@ async function login({ email, password }) {
 
     const err = new Error('Phone verification required. A new OTP has been sent to your phone.');
     err.status = 403;
+    err.code = 'PHONE_VERIFICATION_REQUIRED';
     err.requiresPhoneVerification = true;
     err.userId = user.id;
     err.phone = user.phone;
@@ -236,6 +243,7 @@ async function login({ email, password }) {
       'Your account is not activated yet. Please contact support to activate your account.'
     );
     err.status = 403;
+    err.code = 'ACCOUNT_PENDING_ACTIVATION';
     err.requiresAdminActivation = true;
     throw err;
   }
@@ -587,7 +595,10 @@ async function resendSignupOTP({ email }) {
     console.log(`Signup OTP resent to ${user.phone}`);
   } catch (error) {
     console.error(`Failed to resend signup OTP: ${error.message}`);
-    throw new Error('Failed to send OTP. Please try again.');
+    const err = new Error('Failed to send OTP. Please try again.');
+    err.status = 503;
+    err.code = 'OTP_SEND_FAILED';
+    throw err;
   }
 
   return {

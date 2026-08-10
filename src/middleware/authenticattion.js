@@ -79,9 +79,12 @@ function verifyToken(req, res, next) {
         const status = error.status || 500;
         res.status(status).json({
           message: error.message || 'Authentication failed',
-          requiresPhoneVerification: Boolean(error.requiresPhoneVerification),
-          requiresAdminActivation: Boolean(error.requiresAdminActivation),
-          accountStatus: error.statusCode || undefined,
+          code: error.code || undefined,
+          requiresPhoneVerification:
+            error.requiresPhoneVerification === true ? true : undefined,
+          requiresAdminActivation:
+            error.requiresAdminActivation === true ? true : undefined,
+          accountStatus: error.accountStatus || error.statusCode || undefined,
         });
       });
   });

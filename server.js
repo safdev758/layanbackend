@@ -64,22 +64,44 @@ app.use('/api/v1/store-profiles', storeProfileRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/routing', routingRoutes);
 
-// Global error handler
+// Unknown API routes
+app.use('/api', (req, res) => {
+  res.status(404).json({
+    message: `Route not found: ${req.method} ${req.originalUrl}`,
+    code: 'NOT_FOUND'
+  });
+});
+
+// Global error handler — stable envelope for the mobile app (FR/AR mapping client-side)
 app.use((err, req, res, next) => {
   console.error('Error:', err);
-  const status = err.status || 500;
-  const message = err.message || 'Internal Server Error';
+  const status = Number(err.status || err.statusCode) || 500;
+  const isClientError = status >= 400 && status < 500;
+  const message =
+    isClientError || process.env.NODE_ENV === 'development'
+      ? err.message || 'Internal Server Error'
+      : 'Something went wrong. Please try again later.';
 
-  // Ensure we always send a response
-  if (!res.headersSent) {
-    res.status(status).json({
-      message,
-      requiresAdminActivation: Boolean(err.requiresAdminActivation),
-      requiresPhoneVerification: Boolean(err.requiresPhoneVerification),
-      accountStatus: err.statusCode || undefined,
-      error: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
+  if (res.headersSent) {
+    return next(err);
   }
+
+  const body = {
+    message,
+    code: err.code || undefined,
+    requiresAdminActivation: err.requiresAdminActivation === true ? true : undefined,
+    requiresPhoneVerification: err.requiresPhoneVerification === true ? true : undefined,
+    accountStatus: err.accountStatus || err.statusCode || undefined,
+    userId: err.userId || undefined,
+    phone: err.phone || undefined,
+    fields: err.fields || undefined
+  };
+
+  if (process.env.NODE_ENV === 'development') {
+    body.error = err.stack;
+  }
+
+  res.status(status).json(body);
 });
 
 // Initialize DB and start server
