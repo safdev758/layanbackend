@@ -8,6 +8,8 @@ const { Address } = require('../entities/Address');
 const { DriverTrip } = require('../entities/DriverTrip');
 const { User } = require('../entities/User');
 const { StoreProfile } = require('../entities/StoreProfile');
+const { calculateDistance } = require('../services/locationVerificationService');
+const { DEFAULT_MARKETPLACE_RADIUS_KM } = require('../services/nearbyStoreFilter');
 
 function hasCoords(lat, lon) {
   return (
@@ -169,10 +171,29 @@ const createOrder = asyncHandler(async (req, res) => {
     );
 
     if (!pickup.storeLat || !pickup.storeLon) {
-      console.warn(
-        '[Order] Store pickup coords missing — drivers will not see this order until coords exist',
-        { preferredStoreId, ownerId: firstProduct?.ownerId, storeId: pickup.storeId }
+      await queryRunner.rollbackTransaction();
+      return res.status(400).json({
+        message: 'This store has no pickup location set, so it cannot accept delivery orders',
+        code: 'STORE_LOCATION_MISSING',
+      });
+    }
+
+    if (hasCoords(deliveryAddress.latitude, deliveryAddress.longitude)) {
+      const distanceKm = calculateDistance(
+        Number(pickup.storeLat),
+        Number(pickup.storeLon),
+        Number(deliveryAddress.latitude),
+        Number(deliveryAddress.longitude)
       );
+      if (distanceKm > DEFAULT_MARKETPLACE_RADIUS_KM) {
+        await queryRunner.rollbackTransaction();
+        return res.status(400).json({
+          message: `This store is too far from your delivery address (${distanceKm.toFixed(0)} km). Choose a store within ${DEFAULT_MARKETPLACE_RADIUS_KM} km.`,
+          code: 'STORE_OUT_OF_RANGE',
+          distanceKm,
+          maxDistanceKm: DEFAULT_MARKETPLACE_RADIUS_KM,
+        });
+      }
     }
 
     // Create order - auto-confirm so it appears in driver available deliveries

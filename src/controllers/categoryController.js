@@ -1,6 +1,12 @@
 const asyncHandler = require('../middleware/asyncHandler');
 const { AppDataSource } = require('../config/data-source');
 const { Category } = require('../entities/Category');
+const {
+  resolveCustomerCoords,
+  parseRadiusKm,
+  applyNearbyOwnerFilter,
+  DEFAULT_MARKETPLACE_RADIUS_KM,
+} = require('../services/nearbyStoreFilter');
 
 // Get all categories
 const getCategories = asyncHandler(async (req, res) => {
@@ -35,13 +41,45 @@ const getCategoryProducts = asyncHandler(async (req, res) => {
     q, 
     sort = 'name', 
     minPrice, 
-    maxPrice 
+    maxPrice,
+    radius_km,
   } = req.query;
+
+  const isStoreOwner = req.user && req.user.role === 'SUPERMARKET';
+  const customerCoords = !isStoreOwner ? resolveCustomerCoords(req) : null;
+  const radiusKm = parseRadiusKm(radius_km, DEFAULT_MARKETPLACE_RADIUS_KM);
+
+  if (!isStoreOwner && !customerCoords) {
+    return res.json({
+      products: [],
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: 0,
+        totalPages: 0,
+      },
+      code: 'LOCATION_REQUIRED',
+      message: 'lat and lng are required to list nearby products',
+    });
+  }
 
   const repo = AppDataSource.getRepository('Product');
   let query = repo.createQueryBuilder('product')
     .leftJoinAndSelect('product.category', 'category')
-    .where('product.categoryId = :categoryId', { categoryId: id });
+    .leftJoinAndSelect('product.owner', 'owner')
+    .where('product.categoryId = :categoryId', { categoryId: id })
+    .andWhere('product.isGlobal = :isGlobal', { isGlobal: false });
+
+  if (isStoreOwner) {
+    query = query.andWhere('product.ownerId = :ownerId', { ownerId: req.user.id });
+  } else {
+    query = applyNearbyOwnerFilter(
+      query,
+      customerCoords.latitude,
+      customerCoords.longitude,
+      radiusKm
+    );
+  }
 
   // Search query
   if (q) {

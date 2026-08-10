@@ -5,10 +5,17 @@ const { Category } = require('../entities/Category');
 const { User } = require('../entities/User');
 const { StoreProfile } = require('../entities/StoreProfile');
 const { serializeStoreProfile } = require('../controllers/storeProfileController');
+const {
+  resolveCustomerCoords,
+  parseRadiusKm,
+  applyNearbyOwnerFilter,
+  applyNearbyStoreProfileFilter,
+  DEFAULT_MARKETPLACE_RADIUS_KM,
+} = require('../services/nearbyStoreFilter');
 
 // Global search across products and categories
 const search = asyncHandler(async (req, res) => {
-  const { q, page = 1, limit = 20 } = req.query;
+  const { q, page = 1, limit = 20, radius_km } = req.query;
 
   if (!q || q.trim().length < 2) {
     return res.status(400).json({ 
@@ -18,17 +25,43 @@ const search = asyncHandler(async (req, res) => {
 
   const searchTerm = q.trim();
   const skip = (parseInt(page) - 1) * parseInt(limit);
+  const isStoreOwner = req.user && req.user.role === 'SUPERMARKET';
+  const customerCoords = !isStoreOwner ? resolveCustomerCoords(req) : null;
+  const radiusKm = parseRadiusKm(radius_km, DEFAULT_MARKETPLACE_RADIUS_KM);
+
+  if (!isStoreOwner && !customerCoords) {
+    return res.json({
+      query: searchTerm,
+      products: { items: [], total: 0, page: parseInt(page), limit: parseInt(limit), pages: 0 },
+      categories: { items: [], total: 0 },
+      suggestions: [],
+      code: 'LOCATION_REQUIRED',
+    });
+  }
 
   // Search products
   const productRepo = AppDataSource.getRepository(Product);
-  const productQuery = productRepo.createQueryBuilder('product')
+  let productQuery = productRepo.createQueryBuilder('product')
     .leftJoinAndSelect('product.category', 'category')
+    .leftJoinAndSelect('product.owner', 'owner')
     .where(
       '(product.name ILIKE :search OR product.description ILIKE :search OR product.brand ILIKE :search)',
       { search: `%${searchTerm}%` }
     )
+    .andWhere('product.isGlobal = :isGlobal', { isGlobal: false })
     .orderBy('product.rating', 'DESC')
     .addOrderBy('product.reviewCount', 'DESC');
+
+  if (isStoreOwner) {
+    productQuery = productQuery.andWhere('product.ownerId = :ownerId', { ownerId: req.user.id });
+  } else {
+    productQuery = applyNearbyOwnerFilter(
+      productQuery,
+      customerCoords.latitude,
+      customerCoords.longitude,
+      radiusKm
+    );
+  }
 
   // Search categories
   const categoryRepo = AppDataSource.getRepository(Category);
@@ -77,7 +110,8 @@ const searchProducts = asyncHandler(async (req, res) => {
     limit = 20,
     minPrice,
     maxPrice,
-    minRating
+    minRating,
+    radius_km,
   } = req.query;
 
   if (!q || q.trim().length < 2) {
@@ -88,16 +122,41 @@ const searchProducts = asyncHandler(async (req, res) => {
 
   const searchTerm = q.trim();
   const skip = (parseInt(page) - 1) * parseInt(limit);
+  const isStoreOwner = req.user && req.user.role === 'SUPERMARKET';
+  const customerCoords = !isStoreOwner ? resolveCustomerCoords(req) : null;
+  const radiusKm = parseRadiusKm(radius_km, DEFAULT_MARKETPLACE_RADIUS_KM);
+
+  if (!isStoreOwner && !customerCoords) {
+    return res.json({
+      products: [],
+      pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, pages: 0 },
+      code: 'LOCATION_REQUIRED',
+      message: 'lat and lng are required to search nearby products',
+    });
+  }
 
   const repo = AppDataSource.getRepository(Product);
   let query = repo.createQueryBuilder('product')
-    .leftJoinAndSelect('product.category', 'category');
+    .leftJoinAndSelect('product.category', 'category')
+    .leftJoinAndSelect('product.owner', 'owner');
 
   // Search in multiple fields
   query = query.where(
     '(product.name ILIKE :search OR product.description ILIKE :search OR product.brand ILIKE :search)',
     { search: `%${searchTerm}%` }
-  );
+  )
+    .andWhere('product.isGlobal = :isGlobal', { isGlobal: false });
+
+  if (isStoreOwner) {
+    query = query.andWhere('product.ownerId = :ownerId', { ownerId: req.user.id });
+  } else {
+    query = applyNearbyOwnerFilter(
+      query,
+      customerCoords.latitude,
+      customerCoords.longitude,
+      radiusKm
+    );
+  }
 
   // Apply filters
   if (categoryId) {
@@ -384,7 +443,7 @@ function generateSearchSuggestions(searchTerm, products, categories) {
 
 // Search stores by store profile display name
 const searchStores = asyncHandler(async (req, res) => {
-  const { q, page = 1, limit = 20 } = req.query;
+  const { q, page = 1, limit = 20, radius_km } = req.query;
 
   if (!q || q.trim().length < 2) {
     return res.status(400).json({ message: 'Search query must be at least 2 characters long' });
@@ -392,14 +451,34 @@ const searchStores = asyncHandler(async (req, res) => {
 
   const searchTerm = q.trim();
   const skip = (parseInt(page) - 1) * parseInt(limit);
+  const customerCoords = resolveCustomerCoords(req);
+  const radiusKm = parseRadiusKm(radius_km, DEFAULT_MARKETPLACE_RADIUS_KM);
+
+  if (!customerCoords) {
+    return res.json({
+      stores: [],
+      pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, pages: 0 },
+      code: 'LOCATION_REQUIRED',
+      message: 'lat and lng are required to search nearby stores',
+    });
+  }
 
   const profileRepo = AppDataSource.getRepository(StoreProfile);
-  const [profiles, total] = await profileRepo
+  let storeQuery = profileRepo
     .createQueryBuilder('profile')
     .innerJoin(User, 'user', 'user.id = profile.userId')
     .where('user.role = :role', { role: 'SUPERMARKET' })
     .andWhere('user.status = :status', { status: 'ACTIVE' })
-    .andWhere('profile.displayName ILIKE :search', { search: `%${searchTerm}%` })
+    .andWhere('profile.displayName ILIKE :search', { search: `%${searchTerm}%` });
+
+  storeQuery = applyNearbyStoreProfileFilter(
+    storeQuery,
+    customerCoords.latitude,
+    customerCoords.longitude,
+    radiusKm
+  );
+
+  const [profiles, total] = await storeQuery
     .orderBy('profile.displayName', 'ASC')
     .skip(skip)
     .take(parseInt(limit))

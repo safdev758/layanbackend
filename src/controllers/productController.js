@@ -6,6 +6,12 @@ const { OrderItem } = require('../entities/OrderItem');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const {
+  resolveCustomerCoords,
+  parseRadiusKm,
+  applyNearbyOwnerFilter,
+  DEFAULT_MARKETPLACE_RADIUS_KM,
+} = require('../services/nearbyStoreFilter');
 
 // Configure multer for image uploads
 const storage = multer.diskStorage({
@@ -79,7 +85,8 @@ const getProducts = asyncHandler(async (req, res) => {
     page = 1, 
     limit = 20,
     minPrice,
-    maxPrice
+    maxPrice,
+    radius_km,
   } = req.query;
 
   const repo = AppDataSource.getRepository(Product);
@@ -104,9 +111,42 @@ const getProducts = asyncHandler(async (req, res) => {
     console.log('[Products] No authenticated user - all products will have isFavourite: false');
   }
 
+  const isStoreOwner = req.user && req.user.role === 'SUPERMARKET';
+  const customerCoords = !isStoreOwner ? resolveCustomerCoords(req) : null;
+  const radiusKm = parseRadiusKm(radius_km, DEFAULT_MARKETPLACE_RADIUS_KM);
+
+  // Customers must have a location — never return the worldwide catalog
+  if (!isStoreOwner && !customerCoords) {
+    return res.json({
+      products: [],
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: 0,
+        pages: 0,
+      },
+      code: 'LOCATION_REQUIRED',
+      message: 'lat and lng are required to list nearby products',
+      searchRadius: radiusKm,
+    });
+  }
+
   let query = repo.createQueryBuilder('product')
     .leftJoinAndSelect('product.category', 'category')
-    .leftJoinAndSelect('product.owner', 'owner');
+    .leftJoin('product.owner', 'owner')
+    .addSelect([
+      'owner.id',
+      'owner.name',
+      'owner.email',
+      'owner.phone',
+      'owner.profileImage',
+      'owner.role',
+      'owner.latitude',
+      'owner.longitude',
+      'owner.status',
+      'owner.createdAt',
+      'owner.updatedAt',
+    ]);
 
   // IMPORTANT: Filter OUT Global Products - users should only see Store Products
   // Global Products (isGlobal = true) are templates for supermarkets
@@ -114,10 +154,20 @@ const getProducts = asyncHandler(async (req, res) => {
   query = query.andWhere('product.isGlobal = :isGlobal', { isGlobal: false });
 
   // IMPORTANT: For SUPERMARKET role, show only THEIR own products
-  // For CUSTOMER role, show all store products
-  if (req.user && req.user.role === 'SUPERMARKET') {
+  // For CUSTOMER role, show nearby store products only
+  if (isStoreOwner) {
     query = query.andWhere('product.ownerId = :ownerId', { ownerId: req.user.id });
     console.log(`[Products] Filtering products for SUPERMARKET user ${req.user.id}`);
+  } else {
+    query = applyNearbyOwnerFilter(
+      query,
+      customerCoords.latitude,
+      customerCoords.longitude,
+      radiusKm
+    );
+    console.log(
+      `[Products] Nearby filter lat=${customerCoords.latitude}, lng=${customerCoords.longitude}, radius=${radiusKm}km`
+    );
   }
 
   // Search query
@@ -130,27 +180,20 @@ const getProducts = asyncHandler(async (req, res) => {
 
   // Category filter
   if (categoryId) {
-    if (q) {
-      query = query.andWhere('product.categoryId = :categoryId', { categoryId });
-    } else {
-      query = query.where('product.categoryId = :categoryId', { categoryId });
-    }
+    query = query.andWhere('product.categoryId = :categoryId', { categoryId });
   }
 
   // On sale filter
   if (onSale === 'true') {
-    const whereClause = q || categoryId ? 'andWhere' : 'where';
-    query = query[whereClause]('product.isOnSale = :onSale', { onSale: true });
+    query = query.andWhere('product.isOnSale = :onSale', { onSale: true });
   }
 
   // Price filters
   if (minPrice) {
-    const whereClause = q || categoryId || onSale === 'true' ? 'andWhere' : 'where';
-    query = query[whereClause]('product.price >= :minPrice', { minPrice: parseFloat(minPrice) });
+    query = query.andWhere('product.price >= :minPrice', { minPrice: parseFloat(minPrice) });
   }
   if (maxPrice) {
-    const whereClause = q || categoryId || onSale === 'true' || minPrice ? 'andWhere' : 'where';
-    query = query[whereClause]('product.price <= :maxPrice', { maxPrice: parseFloat(maxPrice) });
+    query = query.andWhere('product.price <= :maxPrice', { maxPrice: parseFloat(maxPrice) });
   }
 
   // Sorting
@@ -194,7 +237,9 @@ const getProducts = asyncHandler(async (req, res) => {
       limit: parseInt(limit),
       total,
       pages: Math.ceil(total / parseInt(limit))
-    }
+    },
+    searchRadius: isStoreOwner ? null : radiusKm,
+    searchCenter: customerCoords,
   });
 });
 
