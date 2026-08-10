@@ -109,13 +109,12 @@ async function getNearbyStores(driverLatitude, driverLongitude, maxDistanceKm = 
   const userRepo = AppDataSource.getRepository(User);
   console.log(`getNearbyStores called with: lat=${driverLatitude}, lon=${driverLongitude}, maxDistance=${maxDistanceKm}`);
 
-  // Find all active supermarkets with verified locations
-  // Join with addresses to get the primary address
+  // Active supermarkets with coordinates (do not require locationVerified —
+  // many real stores have lat/lon from signup but never completed that flag).
   const stores = await userRepo.find({
     where: {
       role: 'SUPERMARKET',
       status: 'ACTIVE',
-      locationVerified: true,
       latitude: Not(IsNull()),
       longitude: Not(IsNull())
     },
@@ -123,19 +122,25 @@ async function getNearbyStores(driverLatitude, driverLongitude, maxDistanceKm = 
     select: ['id', 'name', 'email', 'latitude', 'longitude', 'phone', 'locationVerified']
   });
 
-  console.log(`Found ${stores.length} supermarkets in DB matching criteria (ACTIVE, SUPERMARKET, verified, lat/lon not null)`);
+  console.log(
+    `Found ${stores.length} ACTIVE SUPERMARKET stores with coordinates (radius=${maxDistanceKm}km)`
+  );
 
-  // Filter by distance and add distance info
-  let nearbyStores = stores
-    .map(store => {
-      const primaryAddress = store.addresses ? (store.addresses.find(a => a.isDefault) || store.addresses[0]) : null;
+  // Strict spatial filter — never return far stores as a "fallback"
+  const nearbyStores = stores
+    .map((store) => {
+      const primaryAddress = store.addresses
+        ? store.addresses.find((a) => a.isDefault) || store.addresses[0]
+        : null;
       const addressString = primaryAddress
         ? `${primaryAddress.street}, ${primaryAddress.city}`
-        : "Verified Store";
+        : 'Store';
 
       const distance = calculateDistance(
-        driverLatitude, driverLongitude,
-        store.latitude, store.longitude
+        driverLatitude,
+        driverLongitude,
+        store.latitude,
+        store.longitude
       );
 
       return {
@@ -146,49 +151,16 @@ async function getNearbyStores(driverLatitude, driverLongitude, maxDistanceKm = 
         longitude: store.longitude,
         phone: store.phone,
         address: addressString,
-        distance: distance
+        distance
       };
     })
-    .filter(store => {
-      const isNearby = store.distance <= maxDistanceKm;
-      // if (!isNearby) console.log(`Store ${store.name} is too far: ${store.distance.toFixed(2)}km`);
-      return isNearby;
-    });
+    .filter((store) => Number.isFinite(store.distance) && store.distance <= maxDistanceKm)
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, limit);
 
-  // Fallback: If no stores found within the radius, return the closest 5 stores regardless of distance
-  // This ensures the screen is never empty unless there are truly no stores in the DB
-  if (nearbyStores.length === 0 && stores.length > 0) {
-    console.log(`⚠️ No stores found within ${maxDistanceKm}km. Returning closest 10 stores as fallback.`);
-    nearbyStores = stores
-      .map(store => {
-        const primaryAddress = store.addresses ? (store.addresses.find(a => a.isDefault) || store.addresses[0]) : null;
-        const addressString = primaryAddress
-          ? `${primaryAddress.street}, ${primaryAddress.city}`
-          : "Verified Store";
-
-        return {
-          id: store.id,
-          name: store.name,
-          email: store.email,
-          latitude: store.latitude,
-          longitude: store.longitude,
-          phone: store.phone,
-          address: addressString,
-          distance: calculateDistance(
-            driverLatitude, driverLongitude,
-            store.latitude, store.longitude
-          )
-        };
-      })
-      .sort((a, b) => a.distance - b.distance)
-      .slice(0, 10);
-  } else {
-    nearbyStores = nearbyStores.sort((a, b) => a.distance - b.distance).slice(0, limit);
-  }
-
-  console.log(`Returning ${nearbyStores.length} stores to client`);
-
-  console.log(`Returning ${nearbyStores.length} stores to client`);
+  console.log(
+    `Returning ${nearbyStores.length}/${stores.length} stores within ${maxDistanceKm}km`
+  );
 
   return {
     stores: nearbyStores,

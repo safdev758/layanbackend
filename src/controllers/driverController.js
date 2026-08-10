@@ -13,70 +13,57 @@ const {
 // Get available deliveries for driver
 const getAvailableDeliveries = asyncHandler(async (req, res) => {
   const { driverId } = req.params;
-  const { lat, lng, radius_km = 10 } = req.query;
+  const { lat, lng, radius_km = 25 } = req.query;
 
   // Verify driver exists and is authenticated
   if (req.user.id !== driverId && req.user.role !== 'ADMIN') {
     return res.status(403).json({ message: 'Access denied' });
   }
 
-  const orderRepo = AppDataSource.getRepository(Order);
+  const driverLat = parseFloat(lat);
+  const driverLng = parseFloat(lng);
+  const radiusKm = Number.isFinite(parseFloat(radius_km)) ? parseFloat(radius_km) : 25;
 
-  // Calculate cutoff time (30 minutes ago)
+  // Require live/driver coordinates — never return the global unfiltered list
+  if (!Number.isFinite(driverLat) || !Number.isFinite(driverLng)) {
+    return res.status(400).json({
+      message: 'lat and lng query params are required to list nearby deliveries',
+      code: 'LOCATION_REQUIRED'
+    });
+  }
+
+  const orderRepo = AppDataSource.getRepository(Order);
   const thirtyMinutesAgo = getHangingOrderCutoff();
 
-  // If location provided, use geospatial query with Haversine formula
-  if (lat && lng) {
-    const driverLat = parseFloat(lat);
-    const driverLng = parseFloat(lng);
-    const radiusKm = parseFloat(radius_km);
-
-    // Haversine formula in SQL to calculate distance
-    const availableOrders = await orderRepo
-      .createQueryBuilder('order')
-      .leftJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('order.items', 'items')
-      .leftJoinAndSelect('items.product', 'product')
-      .where('order.status = :status', { status: 'CONFIRMED' })
-      .andWhere('order.driverId IS NULL')
-      .andWhere('order.createdAt > :cutoff', { cutoff: thirtyMinutesAgo })
-      .andWhere('order.storeLat IS NOT NULL')
-      .andWhere('order.storeLon IS NOT NULL')
-      .andWhere(
-        `(
-          6371 * acos(
-            cos(radians(:driverLat)) * 
-            cos(radians(order.storeLat)) * 
-            cos(radians(order.storeLon) - radians(:driverLng)) + 
-            sin(radians(:driverLat)) * 
+  // Haversine formula in SQL (distance in km)
+  const availableOrders = await orderRepo
+    .createQueryBuilder('order')
+    .leftJoinAndSelect('order.user', 'user')
+    .leftJoinAndSelect('order.items', 'items')
+    .leftJoinAndSelect('items.product', 'product')
+    .where('order.status = :status', { status: 'CONFIRMED' })
+    .andWhere('order.driverId IS NULL')
+    .andWhere('order.createdAt > :cutoff', { cutoff: thirtyMinutesAgo })
+    .andWhere('order.storeLat IS NOT NULL')
+    .andWhere('order.storeLon IS NOT NULL')
+    .andWhere(
+      `(
+        6371 * acos(
+          LEAST(1.0, GREATEST(-1.0,
+            cos(radians(:driverLat)) *
+            cos(radians(order.storeLat)) *
+            cos(radians(order.storeLon) - radians(:driverLng)) +
+            sin(radians(:driverLat)) *
             sin(radians(order.storeLat))
-          )
-        ) <= :radiusKm`,
-        { driverLat, driverLng, radiusKm }
-      )
-      .orderBy('order.createdAt', 'ASC')
-      .getMany();
+          ))
+        )
+      ) <= :radiusKm`,
+      { driverLat, driverLng, radiusKm }
+    )
+    .orderBy('order.createdAt', 'ASC')
+    .getMany();
 
-    res.json(availableOrders);
-  } else {
-    // Fallback to all available orders if no location provided (still filter by time)
-    const availableOrders = await orderRepo.find({
-      where: {
-        status: 'CONFIRMED',
-        driverId: null
-      },
-      relations: ['user', 'items', 'items.product'],
-      order: { createdAt: 'ASC' }
-    });
-
-    // Filter orders created within last 30 minutes
-    const recentOrders = availableOrders.filter(order => {
-      const orderDate = new Date(order.createdAt);
-      return orderDate > thirtyMinutesAgo;
-    });
-
-    res.json(recentOrders);
-  }
+  res.json(availableOrders);
 });
 
 // Accept delivery
@@ -187,6 +174,12 @@ const acceptDelivery = asyncHandler(async (req, res) => {
       });
     }
 
+    if (req.pushService) {
+      req.pushService
+        .sendDriverAssigned(order.userId, updatedOrder || order, driver.name)
+        .catch((err) => console.error('Push on acceptDelivery failed:', err.message));
+    }
+
     res.json(updatedOrder);
 
   } catch (error) {
@@ -203,7 +196,9 @@ const updateLocation = asyncHandler(async (req, res) => {
   const { driverId } = req.params;
   const { orderId, lat, lon, timestamp } = req.body;
 
-  if (!lat || !lon) {
+  const driverLat = parseFloat(lat);
+  const driverLon = parseFloat(lon);
+  if (!Number.isFinite(driverLat) || !Number.isFinite(driverLon)) {
     return res.status(400).json({ message: 'Latitude and longitude are required' });
   }
 
@@ -214,6 +209,13 @@ const updateLocation = asyncHandler(async (req, res) => {
 
   const orderRepo = AppDataSource.getRepository(Order);
   const driverTripRepo = AppDataSource.getRepository(DriverTrip);
+  const userRepo = AppDataSource.getRepository(User);
+
+  // Always persist driver profile coordinates for nearby-filtering later
+  await userRepo.update(driverId, {
+    latitude: driverLat,
+    longitude: driverLon
+  });
 
   // Update order location
   if (orderId) {
@@ -223,8 +225,8 @@ const updateLocation = asyncHandler(async (req, res) => {
 
     if (order) {
       await orderRepo.update(orderId, {
-        driverLat: lat,
-        driverLon: lon
+        driverLat: driverLat,
+        driverLon: driverLon
       });
 
       // Update driver trip
@@ -234,8 +236,8 @@ const updateLocation = asyncHandler(async (req, res) => {
 
       if (driverTrip) {
         await driverTripRepo.update(driverTrip.id, {
-          lastLat: lat,
-          lastLon: lon
+          lastLat: driverLat,
+          lastLon: driverLon
         });
       }
 
@@ -243,8 +245,8 @@ const updateLocation = asyncHandler(async (req, res) => {
       if (req.wsService) {
         req.wsService.broadcastDriverLocation(orderId, {
           driverId,
-          latitude: lat,
-          longitude: lon
+          latitude: driverLat,
+          longitude: driverLon
         });
       }
     }

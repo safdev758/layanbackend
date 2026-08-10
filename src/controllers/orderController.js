@@ -157,6 +157,15 @@ const createOrder = asyncHandler(async (req, res) => {
       });
     }
 
+    // Push notifications (store + drivers + customer confirmation)
+    if (req.pushService) {
+      Promise.all([
+        req.pushService.sendNewOrderToStore(completeOrder.storeId, completeOrder),
+        req.pushService.notifyDriversNewDelivery(completeOrder),
+        req.pushService.sendOrderUpdate(completeOrder.userId, completeOrder),
+      ]).catch((err) => console.error('Push on createOrder failed:', err.message));
+    }
+
     res.status(201).json(completeOrder);
 
   } catch (error) {
@@ -312,6 +321,12 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
         lon: updatedOrder.driverLon
       } : null
     });
+  }
+
+  if (req.pushService && updatedOrder.userId) {
+    req.pushService
+      .sendOrderUpdate(updatedOrder.userId, updatedOrder)
+      .catch((err) => console.error('Push on order status failed:', err.message));
   }
 
   res.json(updatedOrder);

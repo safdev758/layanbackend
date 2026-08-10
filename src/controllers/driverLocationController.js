@@ -109,15 +109,11 @@ const updateDriverCurrentLocation = asyncHandler(async (req, res) => {
   const { latitude, longitude } = req.body;
   const driverId = req.user.id;
   
-  if (!latitude || !longitude) {
-    return res.status(400).json({ message: 'Latitude and longitude are required' });
-  }
-  
   const driverLatitude = parseFloat(latitude);
   const driverLongitude = parseFloat(longitude);
-  
-  if (isNaN(driverLatitude) || isNaN(driverLongitude)) {
-    return res.status(400).json({ message: 'Invalid coordinates' });
+
+  if (!Number.isFinite(driverLatitude) || !Number.isFinite(driverLongitude)) {
+    return res.status(400).json({ message: 'Latitude and longitude are required' });
   }
   
   if (driverLatitude < -90 || driverLatitude > 90 || driverLongitude < -180 || driverLongitude > 180) {

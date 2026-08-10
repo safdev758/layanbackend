@@ -282,10 +282,11 @@ const createThreadMessage = asyncHandler(async (req, res) => {
     });
   }
 
-  // Send push notification if recipient is offline
-  // Note: Push notification service should be initialized in server.js
+  // Push when recipient may be offline / backgrounded
   if (req.pushService) {
-    req.pushService.sendNewMessage(recipientId, newMessage, sender.name);
+    req.pushService
+      .sendNewMessage(recipientId, newMessage, sender?.name || 'Layan')
+      .catch((err) => console.error('Push on marketplace message failed:', err.message));
   }
 
   res.status(201).json({ data: newMessage });

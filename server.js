@@ -23,6 +23,7 @@ const {
   startDriverOrderCleanupService,
   stopDriverOrderCleanupService
 } = require('./src/services/driverOrderCleanupService');
+const pushService = require('./src/services/pushNotificationService');
 
 dotenv.config();
 
@@ -43,9 +44,10 @@ app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 // Serve static files for uploads
 app.use('/uploads', express.static('uploads'));
 
-// Make WebSocket service available to routes
+// Make realtime + push services available to routes
 app.use((req, res, next) => {
   req.wsService = wsService;
+  req.pushService = pushService;
   next();
 });
 
